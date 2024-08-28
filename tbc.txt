@@ -1,0 +1,994 @@
+def cmv_bca_calculation_segmented(m4_balance):
+	import numpy as np
+	import math
+	import pandas as pd
+	import sys
+	import os
+	import math
+	import xlrd
+	from functools import lru_cache, wraps
+	from multiprocessing import Pool
+	import time
+	import collections
+	import statistics as stats
+	from datetime import datetime,timedelta
+	from dateutil.relativedelta import relativedelta
+
+	seasonality=[1,1,1,1,1,1,1,1,1,1,1,0.8678,0.905,1,1,0.985,1,0.995,1,1,0.995,0.995,1,0.995,0.995,1,1,0.985,1,0.995,1,1,0.995,1,1,0.995,0.995,1,1,0.985,1,0.995,1,1,0.995,1,1,0.995,0.995,1,1,0.985,1,0.995,1,1,0.995,1,1,0.995]
+	ending_aif_FF=[0.989989412,0.98420865,0.974977601,0.962381766,0.848746596,0.846178774,0.843211741,0.840796485,0.838278377,0.83444832,0.830037451,0.825649897,0.822725775,0.819812009,0.816908562,0.814015398,0.811132481,0.808259773,0.80539724,0.802544845,0.799702551,0.796870324,0.794048128,0.791235927,0.789358425,0.787485378,0.785616776,0.783752607,0.781892862,0.78003753,0.778186601,0.776340063,0.774497907,0.772660123,0.770826699,0.768997625,0.767172892,0.765352489,0.763536405,0.761724631,0.759917155,0.758113969,0.756315061,0.754520422,0.752730041,0.750943909,0.749162015,0.747384349,0.745610901,0.743841662,0.74207662,0.740315767,0.738559092,0.736806586,0.735058238,0.733314039,0.731573978,0.729838046,0.728106234,0.726378531]
+	def get_functional_form(balance,decay=0.999166667):
+		if balance<500:
+			initial_form=[0.61,0.93,1,1,1.15,1.16,1.18,1.14,1.15,1.13,1.12,1.11]
+		elif 500<=balance<2500:
+			initial_form=[1.94,2.46,1.99,1,1.47,1.63,1.78,1.98,2.03,1.95,1.9,1.8]
+		elif 2500<=balance<5000:
+			initial_form=[1.01,1.45,1.38,1,1.08,1.15,1.2,1.28,1.28,1.32,1.28,1.24]
+		elif 5000<=balance<10000:
+			initial_form=[0.76,1.08,1.08,1,0.99,0.98,0.99,0.99,0.99,0.99,0.97,0.95]
+		elif balance>=10000:
+			initial_form=[0.41,0.72,0.87,1,0.99,0.97,0.97,0.9,0.9,0.87,0.86,0.85]
+		extended_form=initial_form.copy()
+		last_value=initial_form[-1]
+		for i in range(1,49):
+			new_value=last_value*decay
+			extended_form.append(new_value)
+			last_value=new_value
+		return extended_form    
+
+	ending_deposit_balance_functional_form= [ m4_balance*x*y*z  for x,y,z in zip(seasonality,ending_aif_FF,get_functional_form(m4_balance))]
+
+	def calculate_average_deposits(ending_deposit_balance_functional_form):
+		average_deposits=[]
+		for i in range(len(ending_deposit_balance_functional_form)):
+			if i==0:
+				average_deposits.append(ending_deposit_balance_functional_form[i]/2)
+			else:
+				average_deposits.append((ending_deposit_balance_functional_form[i]+ending_deposit_balance_functional_form[i-1])/2)
+		return average_deposits
+    
+	attrition_rate_12_months                                       = [0.120127057,0.070070591,0.112549907,0.155029222,1.416924222,0.036305136,0.042076688,0.034372229,0.035938904,0.054827462,0.063431652,0.063431652]
+	attrition_rate_2nd_year                                        =  0.042499207
+	attrition_rate_3rd_year                                        =  0.028474469
+	avg_debit_transaction_size                                     =  111.1301253  
+	monthly_debit_trans_36m                                        = [0.23094138,1.152181683,1.372263465,1.377825077,1.480795972,1.471094652,1.372216872,1.287802213,1.236267032,1.332007713,1.457706169,1.457706169,1.477952088,1.498198007,1.518443926,1.538689845,1.558935764,1.579181683,1.599427602,1.619673521,1.63991944,1.660165359,1.680411278,1.700657197,1.724277436,1.747897675,1.771517914,1.795138153,1.818758392,1.84237863,1.865998869,1.889619108,1.913239347,1.936859586,1.960479825,1.984100064]
+
+	attrition_rate_prospect_12_months                              = [0.127332602,0.111914199,0.151044263,0.190174326,2.282666667,0.094674556,0.096644295,0.096644295,0.096644295,0.096644295,0.096644295,0.096644295]
+	attrition_rate_prospect_2nd_year                               = 0.064751677852349
+	attrition_rate_prospect_3rd_year                               = 0.0433836241610738
+    
+	customer_acquisition_month_number                              = 1
+	prospect_acquisition_month_number                              = 1
+
+	##New Card Spend arra
+# 	spend_for_1_CM_incl_attrition                                  = [5086.348553,5034.218592,5071.160987,5119.403032,5140.204986,5163.966185,5248.679092,5162.253203,5179.509064,5231.67454,5415.868814,5430.571323,5412.361128,5264.159538,5260.754138,5052.310668,5018.42265,5031.315834,5000.183338,5025.616645,5066.733919,5049.512165,5032.348947,5015.244067,4998.197326,4981.208527,4964.277473,4947.403966,4930.587813,4913.828818,4897.126786,4880.481524]+[4863.892839]*28
+
+	spend_for_1_CM_incl_attrition                                  = [2684.543344,4429.836104,4637.998887,4690.491974,4731.475591,4838.346474,4867.458244,4739.106269,4684.020533,4706.409919,4730.596331,4786.457718,4855.244801,5027.181133,5109.623792,5086.348553,5034.218592,5071.160987,5119.403032,5140.204986,5163.966185,5248.679092,5162.253203,5179.509064,5231.67454,5415.868814,5430.571323,5412.361128,5264.159538,5260.754138,5052.310668,5018.42265,5031.315834,5000.183338,5025.616645,5066.733919,5049.512165,5032.348947,5015.244067,4998.197326,4981.208527,4964.277473,4947.403966,4930.587813,4913.828818,4897.126786,4880.481524,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839,4863.892839]
+	percentage_international_transactions                          = 0.023648915    
+	discount_rate                                                  = 0.0195
+
+	##Domestic Wire Outgoing
+	yearly_domestic_wire_outgoing_rate                             = [20]*6 + [25]*54
+	domestic_wire_outgoing                                         = [1/12] * 60
+	domestic_wire_outgoing_surcharge                               =  0.000
+	monthly_assumptions_domestic_wire_outgoing_per_customer        = [0.184717574410265]*12 + [0.234266548057315]*12 + [0.297106627314182]*12 + [0.376803042201364]*12 + [0.477877366438084]*12
+
+
+	##Domestic ACH Outgoing
+	yearly_domestic_ach_outgoing_rate                              = [10]*7 + [10]*53
+	domestic_sameday_ach_outgoing                                  = [1/12] * 60
+    
+	checkbook_rate                                                 =  9
+	check_book_rev_rate                                            = [0.1]*12 + [0.15]*12 + [0.15]*12+ [0.15]*12+ [0.15]*12
+	checkbook_annual_assumptions                                   = [0.2]*24+[0.8]*36
+	checkbook                                                      = [0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.083333333,0.008333333,0.008333333,0.008333333,0.008333333,0.008333333,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125,0.0125]
+
+
+	##Cash Deposits     
+	cash_deposit_rate                                              = 0.393421713209915
+	cash_deposit                                                   = [1/12] * 60
+	monthly_assumptions_cash_deposits_per_customer                 = [0.21]*60
+
+
+	##Stop Payment
+	stop_payment_rate                                              = [0]*15 + [25]*45
+	stop_payment                                                   = [1/12]*60
+	monthly_assumptions_stop_payment_per_customer                  = [0.0310170867027719]*60
+	monthly_assumptions_intl_wire_outgoing_per_customer            = [0]*12 + [0]*12 + [0]*12 + [0]*12 + [0]*12
+
+
+	##International fee charrged to customer rate
+	intl_fee_charged_to_customers_rate                             = 0.027
+
+	avg_international_atm_visits_per_month                         = [0.003]*60
+	avg_international_withdrawal_amt                               = 145
+
+	intl_atm_feature_intro_input_factor                            = 1
+	gbf_cross_sell_feature_intro_input_factor                      = 1
+	new_card_fee_feature_intro_input_factor                        = 1
+
+	international_outgoing_rate                                    = 0
+	international_outgoing                                         = [1/12] * 60
+
+	average_annual_ar                                              = 10600 
+	annual_spend                                                   = 116841.1852
+	revenue_margin                                                 = 0.074
+
+	# revenue_margin                                                 = 0.074
+	customer_eligibility_rate                                      = 1
+	bca_gbf_accounts_rate                                          = 0.0800415200968802
+
+	spend_increase                                                 = 0.02
+	rate_total_lift_achieved_by_customer                           = 1
+
+	revenue_margin_rate                                            = 0.029879453
+
+	wire_per_txn_cost_blended_w_tiers                              = [0.30]*57+[0]*3
+	ach_per_txn_cost_blended_w_tiers                               = [0.120]*57+[0]*3
+
+	##Domestic Wire Incoming
+	domestic_wire_surcharge                                        = 0.000
+	monthly_assumptions_domestic_wire_incoming_per_customer        = [0.293219775432742]*12 + [0.371873574196047]*12 + [0.471625609]*12 + [0.598135308832412]*12 + [0.758580197]*12
+	domestic_wire_incoming                                         = [1/12]*60
+
+	##Domestic ACH Incoming
+	domestic_ach_incoming_surcharge                                = 0.0035
+	monthly_assumptions_domestic_ach_incoming_per_customer         = [20.186208636]*60
+	domestic_ach_incoming                                          = [1/12]*60
+
+	##Domestic ACH Outgoing
+	domestic_ach_outgoing_surcharge                                = 0.0035
+	monthly_assumptions_domestic_ach_outgoing_per_customer         = [18.5672942417502]*60
+	domestic_ach_outgoing                                          = [1/12]*60
+
+
+	##Domestic sameday ACH Outgoing    
+	domestic_sameday_ach_outgoing_surcharge                        = 0.0045 
+	monthly_assumptions_domestic_sameday_ach_outgoing_per_customer = [0.464182356043755]*60
+	domestic_sameday_ach_outgoing                                  = [1/12]*60
+
+	##International ACH Incoming    
+	international_ach_incoming_surcharge                           = 1.50 
+	monthly_assumptions_international_ach_incoming_per_customer    = [0.185474809090284]*60
+	international_ach_incoming                                     = [1/12]*60
+    
+##Check Incoming (Check Scanner)
+
+	check_incoming_scanner_per_txn_cost                            = [0]*12+[0.05]*45+[0]*3
+	check_incoming_scanner_surcharge                               =  0.029072500 
+  
+	monthly_assumptions_check_incoming_scanner_per_customer        = [0]*12 + [7.09416410353259]*48
+	check_incoming_scanner                                         = [1/12]*60
+
+	##Check Incoming (RDC + Lockbox)
+	check_incoming_rdc_lockbox_per_txn_cost                        = [0.350]*57+[0]*3
+   
+	mobile_users_per_txn_cost                                      = [0.250]*60
+	mobile_capture_base_fee                                        = [1000]*60
+	check_incoming_rdc_lockbox                                     = [1/12]*60
+	monthly_assumptions_check_incoming_rdc_lockbox_per_customer    = [2.87981287407985000000]*60
+
+	##Check Outgoing
+	check_outgoing_per_txn_cost                                    = [0.0290725]*60
+	monthly_assumptions_check_outgoing_per_customer                = [1.16788588988007]*60
+	check_outgoing                                                 = [1/12]*60
+
+	##e-Check Outgoing    
+	echeck_outgoing_per_txn_cost                                   = [0.58]*60
+	monthly_assumptions_echeck_outgoing_per_customer               = [3.10170867027719]*60
+	echeck_outgoing                                                = [1/12]*60
+
+	##e-Check Scanner
+    
+	check_scanner_per_txn_cost                                     = [12.5]*13+[0]*47
+	monthly_assumptions_check_scanner_per_customer                 = [3.548531037,7.076341434,7.022532901,6.944296331,6.491832262,6.075312736,6.055473529,6.036181181,6.018497966,5.99574352,5.966204637,5.934667452,5.908459384]+[0]*47
+
+    # monthly_assumptions_check_scanner_per_customer
+	##Bill Pay Outgoing
+    
+	bill_pay_outgoing_per_txn_cost                                 = [0.25]*57+[0]*3
+	monthly_assumptions_bill_pay_outgoing_per_customer             = [0.8]*60
+	bill_pay_outgoing                                              = [1/12]*60
+
+	##Stop Payment     
+	stop_payment_per_txn_cost                                      = [0.25]*60
+	monthly_assumptions_stop_payment_per_customer                  = [0.0310170867027719]*60
+	stop_payment                                                   = [1/12]*60
+
+	##Service Request 
+    # service_request_per_txn_cost_not_found
+	service_request_per_txn_cost                                   = [25.00]*60
+	monthly_assumptions_service_request_per_customer               = [0.0310170867027719]*60
+	service_request                                                = [1/12]*60
+
+	##Insuffucient Funds
+	insuffucuent_funds_per_txn_cost                                = [25.00]*60
+	monthly_assumptions_insuffucuent_funds_per_customer            = [0.0310170867027719]*60
+	insuffucuent_funds                                             = [1/12]*60
+
+	##MP Domestic Withdrawal
+	mp_domestic_withdrawal_per_txn_cost                            = [1.155]*60
+	monthly_assumptions_mp_domestic_withdrawal_per_customer        = [0.22017398717385]*60
+	mp_domestic_withdrawal                                         = [1/12]*60
+
+	##MP Decline Withdrawal
+	mp_decline_per_txn_cost                                        = [0.36]*60
+	rate_mp_decline                                                =  0.15
+	mp_decline                                                     = [1/12]*60
+
+	##MP Balance Inquiry
+	mp_balance_inquiry_per_txn_cost                                = [0.36]*60
+	rate_balance_inquiry                                           = 0.10
+	mp_balance_inquiry                                             = [1/12]*60
+
+	##MP Pin Mgmt
+	mp_pin_mgmt_per_txn_cost                                       = [0.36]*60
+	rate_pin_mgmt                                                  =  0.1
+	mp_pin_mgmt                                                    = [1/12]*60
+
+	##Non MP Domestic Withdrawal
+	non_mp_domestic_withdrawal_per_txn_cost                        = [0.62]*60
+	monthly_assumptions_non_mp_domestic_withdrawal_per_customer    = [2.71547917514415]*60
+	non_mp_domestic_withdrawal                                     = [1/12]*60
+
+	##Non MP Decline
+	non_mp_decline_per_txn_cost                                    = [0.35]*60
+	rate_decline                                                   =  0.15
+	non_mp_decline                                                 = [1/12]*60
+
+	##Non MP Balance Inquiry
+	non_mp_balance_inquiry_per_txn_cost                            = [0.35]*60
+	rate_balance_inquiry                                           = 0.10
+	non_mp_balance_inquiry                                         = [1/12]*60
+
+	##Non MP Pin Mgmt
+	non_mp_pin_mgmt_per_txn_cost                                   = [0.35]*60
+	rate_pin_mgmt                                                  =  0.1
+	non_mp_pin_mgmt                                                = [1/12]*60
+
+	##Cedar Comm
+	cedar_comm_cost_per_month                                      = [0.058522943808]*9+[0.05618596427]*12+[0.05359489299]*12+[0.050665944317]*27
+	monthly_assumptions_cedar_comm_per_customer                    = [108.449031320076]*12 + [112.946074020143]*12 + [112.978996407347]*12 + [112.470831900842]*12 + [112.252231476232]*12
+	cedar_comm                                                     = [1/12]*60
+	FIS_Cedar_cost_savings                                         = [0.000000]*12+[0.826774]*12+[0.826774]*12+[0.826774]*12+[0.000000]*12
+	FIS_Cedar_cost_savings_reduced                                 = [1.000000]*12+[0.173226]*12+[0.173226]*12+[0.173226]*12+[1.000000]*12
+
+
+	##Intenational Wire Incoming
+	cost_intl_wire_incoming_per_txn                                = [5]*60
+	monthly_assumptions_intl_wire_incoming                         = [0]*12 + [0]*12 + [0]*12 + [0]*12 + [0]*12
+	intl_wire_incoming                                             = [1/12]*60
+
+	##Intenational Wire Outgoing
+	cost_intl_wire_outgoing_per_txn                                = [5]*60
+#     getting all 0 values for below
+	monthly_assumptions_intl_wire_outgoing                         = [0]*12 + [0]*12 + [0]*12 + [0]*12 + [0]*12 
+	intl_wire_outgoing                                             = [1/12]*60
+
+	##Gross Contribution Margin Rate
+	gc_margin                                                      = 0.067
+
+	##GSN Servicing Rate Annual
+	gsn_servicing_rate_annual_per_act                              = [176.694482377958]*12 + [128.48217]*12 + [91]*12 + [66]*12 + [47.868131868132]*12
+
+	##Intl per txn cost
+	intl_txn_per_txn_cost                                          = 0.13
+	new_acct_setup_costs                                           = 7.62
+	gc_margin_rate                                                 = 0.0129458565745314
+
+	##Credit Loss Avg deposit rate
+#     not exact value found
+	credit_loss_per_avg_deposit_rate                               = [0.0010]*60
+	fraud_allocation_rate                                          = 0.300
+
+
+	## URR||CPP||Earn Debit
+	urr                                                            = 0.9806
+	cpp                                                            = 0.0087845749366705
+	earn_debit                                                     = 0.5
+
+	##Avg ACH Outgoing txn size
+	avg_ach_outgoing_txn_size                                      = 2689.26739938344
+	earn_ach                                                       = [0.02]*60
+
+
+	##Blended Rate inclusive of Standard and Rush
+#     below_variable_changed-blended_rush
+	blended_rate_incl_standard_rush                                = [12.48]*12 + [7.9243645163836]*12+ [10.85]*12 + [9.85]*24
+	card_replacement_standard_rate                                 = 3.00
+	monthly_assumptions_card_replacement_standard                  = 0.168
+	card_replacement_standard                                      = [1/12]*60
+# card_replacement_rush_shipping_rate-NOT_FOUND
+	card_replacement_rush_shipping_rate                            = 9.56
+	monthly_assumptions_card_replacement_rush_shipping             = 0.042
+	card_replacement_rush_shipping                                 = [1/12]*60
+
+	min_percent_not_required_to_be_at_fed                          = [0.875]*60
+	alternate_cof_rate                                             = [0.0494300000000000000,0.0494600000000000000,0.0486757463813536000,0.0478800235200730000,0.0471259423462524000,0.0463659325300651000,0.0456354114335908000,0.0453764306487606000,0.0451438413353375000,0.0449130346867945000,0.0446830203772703000,0.0444412741807255000,0.0442296484116269000,0.0441277148213220000,0.0440433036963594000,0.0439518983068165000,0.0438656878927347000,0.0437779139452348000,0.0436884891377907000,0.0436013647423399000,0.0435077525449456000,0.0434259840578739000,0.0433365592504297000,0.0432445084321690000,0.0431636638750664000,0.0431567949827273000,0.0432223267473843000,0.0432926745910265000,0.0433631116979184000,0.0434310464350312000,0.0435059053613529000,0.0435695273950379000,0.0436400386460036000,0.0437120341742534000,0.0437783016406860000,0.0438486494843282000,0.0439121894721341000,0.0439966776030612000,0.0440804831324705000,0.0441661800851327000,0.0442446911486859000,0.0443304287432078000,0.0444150661466152000,0.0444954301178887000,0.0445799182488158000,0.0446628536087890000,0.0447494326198956000,0.0448326925981045000,0.0449106410709626000,0.0449931039668426000,0.0450633915664359000,0.0451403337754006000,0.0452179788602355000,0.0452903223685836000,0.0453667881823507000,0.0454430540577993000,0.0455175170419181000,0.0455912523453447000,0.0456677181591119000,0.0457441089752000000,0.0458131118551771000]
+	federal_interest_rate                                          = [0.054,0.054,0.054,0.0525,0.0515,0.0515,0.0505,0.049,0.049,0.047951613,0.0465,0.0465,0.044,0.0415,0.0415,0.0415,0.0415,0.0415,0.039,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034]
+	zero_coupon_rate                                               =[0.054,0.054,0.054,0.0525,0.0515,0.0515,0.0505,0.049,0.049,0.047951613,0.0465,0.0465,0.044,0.0415,0.0415,0.0415,0.0415,0.0415,0.039,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.0365,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034,0.034]
+
+
+	bca_apy_rate                                                   = [0.013,0.013,0.013,0.013,0.013,0.013,0.013,0.013,0.013,0.013,0.013,0.013,0.012794737,0.012581491,0.012581491,0.012581491,0.012581491,0.012581491,0.012359465,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.012127725,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517,0.01188517]
+	apy_tiering_at_50_percent_of_30_percent                        = [0.00825,0.00825,0.00825,0.007875,0.007875,0.007875,0.0075,0.0075,0.0075,0.007125,0.007125,0.007125,0.00675,0.006375,0.006375,0.006375,0.006375,0.006375,0.006,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.005625,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525,0.00525]
+
+	deposit_rate_at_30_percent                                     =  0.7
+
+	apy_tiering_at_30_percent                                      = [0.0165,0.0165,0.0165,0.01575,0.01575,0.01575,0.015,0.015,0.015,0.01425,0.01425,0.01425,0.0135,0.01275,0.01275,0.01275,0.01275,0.01275,0.012,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.01125,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105,0.0105]
+	apy_tiering_for_50_percent_of_the_above                       = [0.055,0.055,0.055,0.0525,0.0525,0.0525,0.05,0.05,0.05,0.0475,0.0475,0.0475,0.045,0.0425,0.0425,0.0425,0.0425,0.0425,0.04,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.0375,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035,0.035]
+
+	operations_rate                                                = 0.0000359692019
+	fdic_rate                                                      = 0.000439102668742985
+	other_rate                                                     = 0.00000867816058
+# credit_loss_per_avg_deposit_rate-significant change review
+	credit_loss_per_avg_deposit_rate                               = [0.001]*60
+	credit_loss_allocation_percentage                              = 0.70
+
+
+	debit_disputes_rate                                            = 0.00006
+	wire_outgoing_avg_txn                                          = 30727.2120150862
+	earn_wire                                                      = [0.06]*60
+
+	basic_purchase_protection_rate                                 = 1.31293993339645
+	extended_warranty_rate                                         = 0.470966583082754
+	global_assist_hotline_rate                                     = 0.0546240159997902
+#  cpa value not clear from data
+	cpa_rate                                                       = 105.87995544905
+# 	check_cpa_incentive_customer-check all below
+	check_cpa_incentive_customer                                   = [0,0,0,0,0,0,0,0,0,0,0,0,50.83721258,293.8374462,187.799804,96.28425119,73.78423772,50.16951024,50.25853879,61.04112432,79.46873533,110.0829731,106.4401999,105.8519853,69.24631581,72.82241926,69.7544485,75.3046465,79.26958416,82.02102925,79.54798361,81.9659762,84.72738443,88.50854686,87.49179167,92.97406622,81.9158641,74.08115495,67.63017839,68.47183584,68.87372988,70.24302881,70.76104984,71.40597949,71.38916674,113.8106773,98.42621665,72.60777,0,0,0,0,0,0,0,0,0,0,0,0]
+	cpa_overlay_incentive_cost                                     = [0]*12 + [137.89776]*12 + [91.1756929304865]*12 + [86.0390341738394]*12 + [0]*12
+	lrp_overlay_naa                                                = [0]*60
+	acquisition_incentive_customer                                 = [105.879955]*12 + [121]*48
+
+	##Cost Channel
+#     check properly below avg_cpa
+	avg_cpa_forecast_2023                                          = 271.3902103
+	channel_costs_customer                                         = [194.0983929]*12 + [365.311252193132]*12 + [107.3010435]*12 + [80.58198171]*12 + [72.52378354]*12
+	channel_cost_overlay                                           = [0]*60
+	channel_cost_bbp                                               = [0]*12 + [8.380422352]*12 + [8.392305257]*12 + [11.40414344]*12 + [0]*12
+	yodlee_snapshot_service_cost_per_new_acct                      = 1.15
+        
+	##Tax Rate
+	tax_rate                                                       = 0.2300
+
+	##Growth Factor(-ve)
+	growth_factor                                                  = -0.035
+    
+	##Cost of Capital
+	cost_of_capital                                                = 0.11
+   
+
+	def input_array_definition(attrition_rate_12_months, attrition_rate_2nd_year, attrition_rate_3rd_year, customer_acquisition_month_number, prospect_acquisition_month_number, attrition_rate_prospect_12_months, attrition_rate_prospect_2nd_year, attrition_rate_prospect_3rd_year,monthly_debit_trans_36m):
+##functional form : Y4-Y5 ||Debit Card txns|| 36th month value considered for Y4-Y5
+		monthly_debit_transactions                                 = monthly_debit_trans_36m           + [monthly_debit_trans_36m[35]]*24        
+		##functional form : Y3-Y5 ||Attrition Rate || Y2-13th month value considered for Y2 || Y3 value considered for Y3-Y5
+		attrition_rate_60m                                         = attrition_rate_12_months          + [attrition_rate_2nd_year]*12          +  [attrition_rate_3rd_year]*36
+		attrition_rate_prospect_60m                                = attrition_rate_prospect_12_months + [attrition_rate_prospect_2nd_year]*12 +  [attrition_rate_prospect_3rd_year]*36
+		new_accounts_acquired = new_accounts_acquired_prospect = naa_functional_form                                                                                                       = [0]*60
+		##Month when the customer and the prospect was acquired within the vintage period
+		new_accounts_acquired[customer_acquisition_month_number-1], naa_functional_form[customer_acquisition_month_number-1], new_accounts_acquired[prospect_acquisition_month_number-1]   = 1,1,1
+# 		new_accounts_acquired[customer_acquisition_month_number-1], naa_functional_form[customer_acquisition_month_number-1], new_accounts_acquired[prospect_acquisition_month_number-1]   = 2,2,1
+
+		return new_accounts_acquired, attrition_rate_60m, new_accounts_acquired_prospect, attrition_rate_prospect_60m, naa_functional_form,monthly_debit_transactions
+    
+	new_accounts_acquired, attrition_rate, new_accounts_acquired_prospect, attrition_rate_prospect, naa_functional_form, monthly_debit_transactions          = input_array_definition(attrition_rate_12_months, attrition_rate_2nd_year, attrition_rate_3rd_year, customer_acquisition_month_number, prospect_acquisition_month_number, attrition_rate_prospect_12_months, attrition_rate_prospect_2nd_year, attrition_rate_prospect_3rd_year, monthly_debit_trans_36m)
+
+	def functional_forms(attrition_rate, attrition_rate_prospect, naa_functional_form, monthly_debit_transactions,percentage_international_transactions):
+		attritors_functional_form                                  = []
+		ending_aif_functional_form                                 = []
+		beginning_aif_functional_form                              = [0.00]
+		attritors_prospect_functional_form                         = []
+		ending_prospect_functional_form                            = []
+		beginning_aif_prospect_functional_form                     = [0.0]
+		##Creation of functional form of ending AIF, average AIF, Attritors  
+        
+		for i in range(0, len(naa_functional_form)):
+			attritors_functional_form.append    ((naa_functional_form[i]+beginning_aif_functional_form[i])*attrition_rate[i]/12)
+			ending_aif_functional_form.append   (beginning_aif_functional_form[i]+naa_functional_form[i]-attritors_functional_form[i])
+			beginning_aif_functional_form.append(beginning_aif_functional_form[i]+naa_functional_form[i]-attritors_functional_form[i])
+            
+			attritors_prospect_functional_form.append ((naa_functional_form[i]+beginning_aif_prospect_functional_form[i])*attrition_rate_prospect[i]/12)
+			ending_prospect_functional_form.append    (beginning_aif_prospect_functional_form[i]+naa_functional_form[i]-attritors_prospect_functional_form[i])
+			beginning_aif_prospect_functional_form.append(beginning_aif_prospect_functional_form[i]+naa_functional_form[i]-attritors_prospect_functional_form[i])
+    
+		average_deposits                                           =calculate_average_deposits(ending_deposit_balance_functional_form)
+		# print(average_deposits[1])        
+		average_aif_functional_form                                = [(x+y)/2 for x,y in zip(ending_aif_functional_form,beginning_aif_prospect_functional_form)]
+		# ending_deposit_balance_functional_form                     = [x*y for x,y in zip(ending_aif_functional_form, avg_deposit_balance)]
+		average_aif                                                = [(x+y)/2 for x,y in zip(beginning_aif_functional_form,ending_aif_functional_form )]
+		average_aif_prospect                                       = [(x+y)/2 for x,y in zip(beginning_aif_prospect_functional_form, ending_prospect_functional_form  )]
+		total_segments_average_aif                                 = [x+y for x,y in zip(average_aif,average_aif_prospect)]
+		# average_deposits_check                                     = [0] + ending_deposit_balance_functional_form
+		# average_deposits                                           = [(x+y)/2 for x,y in zip(average_deposits_check[:-1],average_deposits_check[1:])]
+		avg_debit_volume                                           = [x * avg_debit_transaction_size for x in monthly_debit_transactions]
+		debit_card_spend                                           = [x*y for x,y in zip(ending_aif_functional_form, avg_debit_volume)]
+		international_debit_card_spend                             = [x * percentage_international_transactions for x in debit_card_spend]   
+		# print("average_deposits_check:",average_deposits_check)
+     
+		return ending_aif_functional_form, average_aif, total_segments_average_aif, ending_deposit_balance_functional_form, average_deposits, debit_card_spend, international_debit_card_spend
+
+	ending_aif_functional_form, average_aif, total_segments_average_aif, ending_deposit_balance_functional_form, average_deposits, debit_card_spend, international_debit_card_spend = functional_forms(attrition_rate, attrition_rate_prospect, naa_functional_form, monthly_debit_transactions,percentage_international_transactions)    
+
+##Total Monthly Revenue Per Customer     
+	def toal_rev_per_cust():
+		global high_lvl_data
+		global granular_data       
+		## Revenue Discount (Discount Revenue)
+		def discount_revenue(debit_card_spend,discount_rate):
+			return [x * discount_rate for x in debit_card_spend]
+		# print(discount_revenue(debit_card_spend,discount_rate))       
+			## Revenue Domestic Wire Outgoing (BCA Acct Transaction costs)
+		def domestic_wire_outgoing_revenue(yearly_domestic_wire_outgoing_rate,domestic_wire_outgoing):
+			domestic_wire_outgoing_aif_functional                  = [(x*y) for x,y in zip(domestic_wire_outgoing, monthly_assumptions_domestic_wire_outgoing_per_customer)]
+			domestic_wire_outgoing_pre_aif_functional              = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_wire_outgoing_aif_functional)]
+			result                                                 =[x*y for x,y in zip(yearly_domestic_wire_outgoing_rate, domestic_wire_outgoing_pre_aif_functional)]
+			return result
+		## Domestic Sameday ACH Outgoing (BCA Acct Transaction costs)
+		def domestic_sameday_ach_outgoing_revenue(yearly_domestic_ach_outgoing_rate, domestic_sameday_ach_outgoing):    
+			domestic_ach_outgoing_aif_functional                   = [(x*y) for x,y in zip(domestic_sameday_ach_outgoing, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer)]
+			domestic_ach_outgoing_pre_aif_functional               = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_ach_outgoing_aif_functional)]
+			return [x*y for x,y in zip(yearly_domestic_ach_outgoing_rate,domestic_ach_outgoing_pre_aif_functional)]
+
+		def checkbook_revenue(checkbook_rate,ending_aif_functional_form,checkbook,checkbook_annual_assumptions):
+			checkbook_result                                       = [(x*y*z) for x,y,z in zip(checkbook,checkbook_annual_assumptions,ending_aif_functional_form)]
+			result                                                 = [p*checkbook_rate for p in checkbook_result]
+			return result
+     
+		## Revenue Scheck Scanner (BCA Acct Transaction costs)
+		def check_scanner(check_scanner_per_txn_cost,monthly_assumptions_check_scanner_per_customer):
+			return [x*y/1000 for x,y in zip(check_scanner_per_txn_cost,monthly_assumptions_check_scanner_per_customer)]
+
+		def cash_deposit_revenue(cash_deposit_rate):
+			cash_deposit_aif_functional                            = [(x*y) for x,y in zip(cash_deposit, monthly_assumptions_cash_deposits_per_customer)]
+			cash_deposit_pre_aif_functional                        = [(x*y) for x,y in zip(ending_aif_functional_form, cash_deposit_aif_functional)]
+			resultlist                                             = [cash_deposit_rate*x for x in cash_deposit_pre_aif_functional]   #new_accounts_acquired
+			resultlist[:18]                                        = [0.0] * 18 
+			return resultlist
+
+		def stop_payment_revenue(stop_payment_rate,stop_payment,monthly_assumptions_stop_payment_per_customer):
+			stop_payment_aif_functional                            = [(x*y) for x,y in zip(stop_payment, monthly_assumptions_stop_payment_per_customer)]
+			stop_payment_pre_aif_functional                        = [(x*y) for x,y in zip(ending_aif_functional_form, stop_payment_aif_functional)]
+			return [x*y for x,y in zip(stop_payment_rate,stop_payment_pre_aif_functional)]        
+
+		def international_debit_spend_fx_fees_revenue(intl_fee_charged_to_customers_rate):
+			return [intl_fee_charged_to_customers_rate*x for x in international_debit_card_spend]                                          #international_debit_card_spend
+
+		## Revenue International ATM Transaction FX Fees (Debit Acct Transaction Revenue)
+		def international_atm_transaction_fx_fees_revenue(avg_international_atm_visits_per_month,avg_international_withdrawal_amt,intl_atm_feature_intro_input_factor,intl_fee_charged_to_customers_rate):
+			return [avg_international_withdrawal_amt*intl_atm_feature_intro_input_factor*intl_fee_charged_to_customers_rate*x*y 
+				   for x,y in zip(avg_international_atm_visits_per_month,average_aif )]                      
+
+		## Revenue International Wire Outgoing (Cross Sell Revenue)
+		def international_wire_outgoing_revenue(international_outgoing_rate):
+			intl_outgoing_aif_functional                           = [(x*y) for x,y in zip(international_outgoing, monthly_assumptions_intl_wire_outgoing_per_customer)]
+			intl_outgoing_pre_aif_functional                       = [(x*y) for x,y in zip(ending_aif_functional_form, intl_outgoing_aif_functional)]
+			return [international_outgoing_rate*x for x in intl_outgoing_pre_aif_functional] #new_accounts_acquired
+
+		## Revenue KLOC Cross Sell (Cross Sell Revenue)
+		def kloc_cross_sell_revenue(average_annual_ar,revenue_margin,customer_eligibility_rate,bca_gbf_accounts_rate,gbf_cross_sell_feature_intro_input_factor):
+			revenue_from_1_loan                                    = [average_annual_ar*revenue_margin/12]*60
+			bca_accts_with_loan                                    = customer_eligibility_rate*bca_gbf_accounts_rate/12 #new_accounts_acquired
+			return [x*bca_accts_with_loan*gbf_cross_sell_feature_intro_input_factor for x in revenue_from_1_loan]
+		def new_card_spend_revenue(spend_for_1_CM_incl_attrition,new_card_fee_feature_intro_input_factor,annual_spend,spend_increase,rate_total_lift_achieved_by_customer,revenue_margin_rate):
+			year_1_cm_spend = sum(spend_for_1_CM_incl_attrition[:12])
+			year_2_cm_spend = sum(spend_for_1_CM_incl_attrition[12:24])
+			year_3_cm_spend = sum(spend_for_1_CM_incl_attrition[24:36])
+			year_4_cm_spend = sum(spend_for_1_CM_incl_attrition[36:48])
+			year_5_cm_spend = sum(spend_for_1_CM_incl_attrition[-12:])
+			shape_of_spend_curve_post_attrition                    = [x/year_1_cm_spend for x in spend_for_1_CM_incl_attrition[:12]] + [x/year_2_cm_spend for x in spend_for_1_CM_incl_attrition[12:24]] + [x/year_3_cm_spend for x in spend_for_1_CM_incl_attrition[24:36]] + [x/year_4_cm_spend for x in spend_for_1_CM_incl_attrition[36:48]] + [x/year_5_cm_spend for x in spend_for_1_CM_incl_attrition[-12:]]
+			inc_monthly_spend_from_customer                        = [annual_spend*spend_increase*rate_total_lift_achieved_by_customer*x for x in shape_of_spend_curve_post_attrition]
+			return [x*revenue_margin_rate*new_card_fee_feature_intro_input_factor for x in inc_monthly_spend_from_customer]
+
+		def current_funding_replaced_revenue(min_percent_not_required_to_be_at_fed,alternate_cof_rate):
+			current_funding_replaced_revenues=[]
+			for i in range(0,len(ending_deposit_balance_functional_form)):
+				if i<14:
+					current_funding_replaced_revenues.append(ending_deposit_balance_functional_form[i]*min_percent_not_required_to_be_at_fed[i]*alternate_cof_rate[i]/12)
+				else :
+					current_funding_replaced_revenues.append(average_deposits[i]*min_percent_not_required_to_be_at_fed[i]*alternate_cof_rate[i]/12)
+			return current_funding_replaced_revenues       
+		# print("current_funding_replaced_revenue:",current_funding_replaced_revenue(min_percent_not_required_to_be_at_fed,alternate_cof_rate)[2][0])      
+		def interests_earned_on_deposits_held_at_fed(federal_interest_rate,zero_coupon_rate):
+			interests_earned_on_deposits_held_at_fed_revenues=[]           
+			for i in range(0,len(ending_deposit_balance_functional_form)):
+				if i<14:
+					interests_earned_on_deposits_held_at_fed_revenues.append(ending_deposit_balance_functional_form[i]*(1-min_percent_not_required_to_be_at_fed[i])*zero_coupon_rate[i]/12)                    
+				else:
+					interests_earned_on_deposits_held_at_fed_revenues.append(average_deposits[i]*(1-min_percent_not_required_to_be_at_fed[i])*zero_coupon_rate[i]/12)                    
+			return interests_earned_on_deposits_held_at_fed_revenues
+      
+		def apy_paid_to_customer_cost(bca_apy_rate,average_deposits):
+			apy_paid                                               = [x*y for x,y in zip(bca_apy_rate,average_deposits)]
+			result                                                 =  [0.95*p/12 for p in apy_paid]           
+			return result
+
+# 		## Operations ((COF and benefits))
+# 		def operations_cost(operations_rate):
+# 			return [x*operations_rate/12 for x in (ending_deposit_balance_functional_form)]
+		def operations_cost(operations_rate):
+			operations_costs=[]
+			for i in range(0,len(ending_deposit_balance_functional_form)):
+				if i<14:
+					operations_costs.append(operations_rate/12*ending_deposit_balance_functional_form[i])
+				else :
+					operations_costs.append(operations_rate/12*average_deposits[i])
+			return operations_costs 
+
+		def fdic_cost(fdic_rate):
+			fdic_costs=[]
+			for i in range(0,len(ending_deposit_balance_functional_form)):
+				if i<14:
+					fdic_costs.append(fdic_rate/12*ending_deposit_balance_functional_form[i])
+				else :
+					fdic_costs.append(fdic_rate/12*average_deposits[i])
+			return fdic_costs
+        
+		def other_cost(other_rate):
+			other_costs=[]
+			for i in range(0,len(ending_deposit_balance_functional_form)):
+				if i<14:
+					other_costs.append(other_rate/12*ending_deposit_balance_functional_form[i])
+				else :
+					other_costs.append(other_rate/12*average_deposits[i])
+			return other_costs
+        
+		def credit_loss(credit_loss_per_avg_deposit_rate,credit_loss_allocation_percentage):
+			return [x*(y/12)*credit_loss_allocation_percentage for x,y in zip(average_deposits,credit_loss_per_avg_deposit_rate)]
+## BCA Acct Transaction Revenue(Monthly)
+		bca_account_transaction_revenue   =          [a+b+c+d+e+f for a,b,c,d,e,f in zip(  domestic_wire_outgoing_revenue(yearly_domestic_wire_outgoing_rate,domestic_wire_outgoing),
+																							domestic_sameday_ach_outgoing_revenue(yearly_domestic_ach_outgoing_rate, domestic_sameday_ach_outgoing),
+																							checkbook_revenue(checkbook_rate,ending_aif_functional_form,checkbook,checkbook_annual_assumptions),
+																							cash_deposit_revenue(cash_deposit_rate),
+																							check_scanner(check_scanner_per_txn_cost,monthly_assumptions_check_scanner_per_customer),
+																							stop_payment_revenue(stop_payment_rate,stop_payment,monthly_assumptions_stop_payment_per_customer))
+											         ]
+        ## Debit Acct Transaction Revenue(Monthly)
+		debit_account_transaction_revenue =          [a+b  for a,b in zip( international_atm_transaction_fx_fees_revenue(avg_international_atm_visits_per_month,avg_international_withdrawal_amt,intl_atm_feature_intro_input_factor,intl_fee_charged_to_customers_rate),
+																			 international_debit_spend_fx_fees_revenue(intl_fee_charged_to_customers_rate))
+											         ]
+
+## Cross Sell Revenue(Monthly)
+		cross_sell_revenue                =          [a+b+c for a,b,c in zip ( international_wire_outgoing_revenue(international_outgoing_rate),
+																				kloc_cross_sell_revenue(average_annual_ar,revenue_margin,customer_eligibility_rate,bca_gbf_accounts_rate,gbf_cross_sell_feature_intro_input_factor),
+																				new_card_spend_revenue(spend_for_1_CM_incl_attrition,new_card_fee_feature_intro_input_factor, annual_spend, spend_increase, rate_total_lift_achieved_by_customer, revenue_margin_rate))
+											         ]
+
+## Total Cost of deposits per customer(Monthly)
+		total_cost_of_deposits            =          [a+b+c+d+e for a,b,c,d,e in zip(       apy_paid_to_customer_cost(bca_apy_rate,average_deposits),
+																					 operations_cost(operations_rate),
+																					 other_cost(other_rate),
+																					 fdic_cost(fdic_rate),
+																					 credit_loss(credit_loss_per_avg_deposit_rate,credit_loss_allocation_percentage) )
+											         ]
+
+## Total Revenue Net of COF & Benefits per Customer (Monthly)
+		total_revenue_net_of_cof_benefits_provision =[a+b+c+d+e+f-g for a,b,c,d,e,f,g in 
+																		 zip(  discount_revenue(debit_card_spend, discount_rate),
+																			   bca_account_transaction_revenue,
+																			   debit_account_transaction_revenue,
+																			   cross_sell_revenue,
+																			   interests_earned_on_deposits_held_at_fed(federal_interest_rate,zero_coupon_rate),
+																			   current_funding_replaced_revenue(min_percent_not_required_to_be_at_fed,alternate_cof_rate),
+																			   total_cost_of_deposits  
+																			)
+													]
+		return total_revenue_net_of_cof_benefits_provision    
+## Total monthly cost per customer
+
+
+	def total_cost_per_cust():
+ 		## Cost Domestic Wire Incoming (BCA Acct transaction costs)
+		def cost_domestic_wire_incoming(wire_per_txn_cost_blended_w_tiers,domestic_wire_surcharge,monthly_assumptions_domestic_wire_incoming_per_customer):
+			total_cost_incl_surcharge                            = [(x+domestic_wire_surcharge) for x in wire_per_txn_cost_blended_w_tiers]
+			domestic_wire_incoming_aif_functional                = [(x*y) for x,y in zip(domestic_wire_incoming, monthly_assumptions_domestic_wire_incoming_per_customer)]
+			domestic_wire_incoming_pre_aif_functional            = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_wire_incoming_aif_functional)]
+			return [x*y for x,y in zip(domestic_wire_incoming_pre_aif_functional,total_cost_incl_surcharge)]
+
+
+		##Cost Domestic Wire Outgoing (BCA Acct transaction costs)
+		def cost_domestic_wire_outgoing(wire_per_txn_cost_blended_w_tiers, domestic_wire_outgoing_surcharge, monthly_assumptions_domestic_wire_outgoing_per_customer):
+			total_cost_incl_surcharge                            = [(x+domestic_wire_outgoing_surcharge) for x in wire_per_txn_cost_blended_w_tiers]
+			domestic_wire_outgoing_aif_functional                = [(x*y) for x,y in zip(domestic_wire_outgoing, monthly_assumptions_domestic_wire_outgoing_per_customer)]
+			domestic_wire_outgoing_pre_aif_functional            = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_wire_outgoing_aif_functional)]
+			return [x*y for x,y in zip(domestic_wire_outgoing_pre_aif_functional , total_cost_incl_surcharge)]
+
+
+		##Cost Domestic ACH Incoming (BCA Acct transaction costs)
+		def cost_domestic_ach_incoming(ach_per_txn_cost_blended_w_tiers, domestic_ach_incoming_surcharge, monthly_assumptions_domestic_ach_incoming_per_customer):
+			total_cost_incl_surcharge                            = [(x+domestic_ach_incoming_surcharge) for x in ach_per_txn_cost_blended_w_tiers]
+			domestic_ach_incoming_aif_functional                 = [(x*y) for x,y in zip(domestic_ach_incoming, monthly_assumptions_domestic_ach_incoming_per_customer)]
+			domestic_ach_incoming_pre_aif_functional             = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_ach_incoming_aif_functional)]
+			return [x*y for x,y in zip(domestic_ach_incoming_pre_aif_functional, total_cost_incl_surcharge)]
+
+
+		##Cost Domestic ACH Outgoing (BCA Acct transaction costs)
+		def cost_domestic_ach_outgoing(ach_per_txn_cost_blended_w_tiers, domestic_ach_outgoing_surcharge, monthly_assumptions_domestic_ach_outgoing_per_customer):
+			total_cost_incl_surcharge                            = [(x+domestic_ach_outgoing_surcharge) for x in ach_per_txn_cost_blended_w_tiers]
+			domestic_ach_outgoing_aif_functional                 = [(x*y) for x,y in zip(domestic_ach_outgoing, monthly_assumptions_domestic_ach_outgoing_per_customer)]
+			domestic_ach_outgoing_pre_aif_functional             = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_ach_outgoing_aif_functional)]
+			return [x*y for x,y in zip(domestic_ach_outgoing_pre_aif_functional, total_cost_incl_surcharge)]
+
+
+		## Cost Domestic Sameday ACH Outgoing (BCA Acct transaction costs)
+		def cost_domestic_sameday_ach_outgoing(ach_per_txn_cost_blended_w_tiers, domestic_sameday_ach_outgoing_surcharge, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer):
+			total_cost_incl_surcharge                            = [(x+domestic_sameday_ach_outgoing_surcharge) for x in ach_per_txn_cost_blended_w_tiers]
+			domestic_sameday_ach_outgoing_aif_functional         = [(x*y) for x,y in zip(domestic_sameday_ach_outgoing, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer)]
+			domestic_sameday_ach_outgoing_pre_aif_functional     = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_sameday_ach_outgoing_aif_functional)]
+			result= [x*y for x,y in zip(domestic_sameday_ach_outgoing_pre_aif_functional, total_cost_incl_surcharge)]
+			return result 
+
+		def cost_international_ach_incoming(ach_per_txn_cost_blended_w_tiers, international_ach_incoming_surcharge, monthly_assumptions_international_ach_incoming_per_customer):
+			total_cost_incl_surcharge                            = [(x+international_ach_incoming_surcharge) for x in ach_per_txn_cost_blended_w_tiers]
+			international_ach_incoming_aif_functional            = [(x*y) for x,y in zip(international_ach_incoming, monthly_assumptions_international_ach_incoming_per_customer)]
+			international_ach_incoming_pre_aif_functional        = [(x*y) for x,y in zip(ending_aif_functional_form, international_ach_incoming_aif_functional)]
+			return [x*y for x,y in zip(international_ach_incoming_pre_aif_functional, total_cost_incl_surcharge)]
+
+
+		## Cost Check Incoming Check Scanner (BCA Acct transaction costs)
+		def cost_check_incoming_scanner(check_incoming_scanner_per_txn_cost, check_incoming_scanner_surcharge, monthly_assumptions_check_incoming_scanner_per_customer):
+			total_cost_incl_surcharge                            = [(x+check_incoming_scanner_surcharge) for x in check_incoming_scanner_per_txn_cost]
+			check_incoming_aif_functional                        = [(x*y) for x,y in zip(check_incoming_scanner, monthly_assumptions_check_incoming_scanner_per_customer)]
+			check_incoming_pre_aif_functional                    = [(x*y) for x,y in zip(ending_aif_functional_form, check_incoming_aif_functional)]
+			return [x*y for x,y in zip(check_incoming_pre_aif_functional, total_cost_incl_surcharge)]
+
+
+		## Cost Check Incoming RDC+Lockbox (BCA Acct transaction costs)
+		def cost_check_incoming_rdc_lockbox(check_incoming_rdc_lockbox_per_txn_cost, mobile_users_per_txn_cost, mobile_capture_base_fee, monthly_assumptions_check_incoming_rdc_lockbox_per_customer):
+			check_rdc_lockbox                                    = []
+			check_incoming_rdc_lockbox_aif_functional            = [(x*y) for x,y in zip(check_incoming_rdc_lockbox, monthly_assumptions_check_incoming_rdc_lockbox_per_customer)]
+			check_incoming_rdc_lockbox_pre_aif_functional        = [(x*y) for x,y in zip(ending_aif_functional_form, check_incoming_rdc_lockbox_aif_functional)]
+			for i in range(0,len(average_aif)):
+				if(average_aif[i]==0):
+					check_rdc_lockbox.append(average_aif[i])
+				else:
+					result=(check_incoming_rdc_lockbox_pre_aif_functional[i]*check_incoming_rdc_lockbox_per_txn_cost[i]) + (average_aif[i]*mobile_users_per_txn_cost[i]) + (mobile_capture_base_fee[i]/1000*(average_aif[i]/total_segments_average_aif[i]))
+					check_rdc_lockbox.append(result)
+			return check_rdc_lockbox
+
+
+
+		## Cost Check Outgoing (BCA Acct transaction costs)
+		def cost_check_outgoing(check_outgoing_per_txn_cost, monthly_assumptions_check_outgoing_per_customer):
+			check_outgoing_aif_functional                        = [(x*y) for x,y in zip(check_outgoing, monthly_assumptions_check_outgoing_per_customer)]
+			check_outgoing_pre_aif_functional                    = [(x*y) for x,y in zip(ending_aif_functional_form, check_outgoing_aif_functional)]
+			return [x*y for x,y in zip(check_outgoing_pre_aif_functional, check_outgoing_per_txn_cost)]
+
+		def cost_echeck_outgoing(check_outgoing_per_txn_cost, monthly_assumptions_echeck_outgoing_per_customer):
+			echeck_outgoing_aif_functional                       = [(x*y) for x,y in zip(echeck_outgoing, monthly_assumptions_echeck_outgoing_per_customer)]
+			echeck_outgoing_pre_aif_functional                   = [(x*y) for x,y in zip(ending_aif_functional_form, echeck_outgoing_aif_functional)]
+			return [x*y for x,y in zip(echeck_outgoing_pre_aif_functional, echeck_outgoing_per_txn_cost)]
+
+
+		## Cost Check Scanner (BCA Acct transaction costs)
+		def cost_check_scanner(check_scanner_per_txn_cost, monthly_assumptions_check_scanner_per_customer):
+			return [x*y/1000 for x,y in zip(check_scanner_per_txn_cost, monthly_assumptions_check_scanner_per_customer)]
+
+
+		## Cost Bill Pay Outgoing (BCA Acct transaction costs)
+		def cost_billpay_outgoing(bill_pay_outgoing_per_txn_cost, monthly_assumptions_bill_pay_outgoing_per_customer):
+			bill_pay_outgoing_aif_functional                     = [(x*y) for x,y in zip(bill_pay_outgoing, monthly_assumptions_bill_pay_outgoing_per_customer)]
+			bill_pay_outgoing_pre_aif_functional                 = [(x*y) for x,y in zip(ending_aif_functional_form, bill_pay_outgoing_aif_functional)]
+			return [x*y for x,y in zip(bill_pay_outgoing_pre_aif_functional, bill_pay_outgoing_per_txn_cost)]
+
+
+		# Cost Stop Payment (BCA Acct transaction costs)
+		def cost_stop_payment(stop_payment_per_txn_cost, monthly_assumptions_stop_payment_per_customer):
+			stop_payment_aif_functional                          = [(x*y) for x,y in zip(stop_payment, monthly_assumptions_stop_payment_per_customer)]
+			stop_payment_pre_aif_functional                      = [(x*y) for x,y in zip(ending_aif_functional_form, stop_payment_aif_functional)]
+			return [x*y*100 for x,y in zip(stop_payment_pre_aif_functional, stop_payment_per_txn_cost)]
+
+		## Cost Service Request (BCA Acct transaction costs)
+		def cost_service_request(service_request_per_txn_cost, monthly_assumptions_service_request_per_customer):
+			service_request_aif_functional                       = [(x*y) for x,y in zip(service_request, monthly_assumptions_service_request_per_customer)]
+			service_request_pre_aif_functional                   = [(x*y) for x,y in zip(ending_aif_functional_form, service_request_aif_functional)]
+			return [x*y for x,y in zip(service_request_pre_aif_functional, service_request_per_txn_cost)]
+
+		## Cost Insufficient Funds (BCA Acct transaction costs)
+		def cost_insuffucuent_funds(service_request_per_txn_cost, monthly_assumptions_service_request_per_customer):
+			insuffucuent_funds_aif_functional                    = [(x*y) for x,y in zip(insuffucuent_funds, monthly_assumptions_insuffucuent_funds_per_customer)]
+			insuffucuent_funds_pre_aif_functional                = [(x*y) for x,y in zip(ending_aif_functional_form, insuffucuent_funds_aif_functional)]
+			return [x*y for x,y in zip(insuffucuent_funds_pre_aif_functional, insuffucuent_funds_per_txn_cost)]
+
+		def cost_mp_domestic_withdrawal(mp_domestic_withdrawal_per_txn_cost, monthly_assumptions_mp_domestic_withdrawal_per_customer):
+			mp_domestic_withdrawal_functional                    = [(x*y) for x,y in zip(mp_domestic_withdrawal, monthly_assumptions_mp_domestic_withdrawal_per_customer)]
+			mp_domestic_withdrawal_pre_aif_functional            = [(x*y) for x,y in zip(ending_aif_functional_form, mp_domestic_withdrawal_functional)]
+			return [x*y for x,y in zip(mp_domestic_withdrawal_pre_aif_functional, mp_domestic_withdrawal_per_txn_cost)]
+
+
+		#Cost MP Decline (Debit Acct transaction costs)
+		def cost_mp_decline(mp_decline_per_txn_cost, rate_mp_decline,monthly_assumptions_mp_domestic_withdrawal_per_customer):
+			monthly_assumptions_mp_decline_per_customer          = [x*rate_mp_decline for x in monthly_assumptions_mp_domestic_withdrawal_per_customer]
+			mp_decline_functional                                = [(x*y) for x,y in zip(mp_decline, monthly_assumptions_mp_decline_per_customer)]
+			mp_decline_pre_aif_functional                        = [(x*y) for x,y in zip(ending_aif_functional_form, mp_decline_functional)]
+			return [x*y for x,y in zip(mp_decline_pre_aif_functional, mp_decline_per_txn_cost)]
+
+
+		#Cost MP Balance Inquiry (Debit Acct transaction costs)
+		def cost_mp_balance_inquiry(mp_decline_per_txn_cost, rate_balance_inquiry,monthly_assumptions_mp_domestic_withdrawal_per_customer):
+			monthly_assumptions_mp_balance_inquiry_per_customer  = [x*rate_balance_inquiry for x in monthly_assumptions_mp_domestic_withdrawal_per_customer]
+			mp_balance_inquiry_functional                        = [(x*y) for x,y in zip(mp_balance_inquiry, monthly_assumptions_mp_balance_inquiry_per_customer)]
+			mp_balance_inquiry_pre_aif_functional                = [(x*y) for x,y in zip(ending_aif_functional_form, mp_balance_inquiry_functional)]
+			return [x*y for x,y in zip(mp_balance_inquiry_pre_aif_functional, mp_balance_inquiry_per_txn_cost)]
+
+		#Cost MP Pin Management (Debit Acct transaction costs)
+		def cost_mp_pin_mgmt(mp_pin_mgmt_per_txn_cost, rate_pin_mgmt, monthly_assumptions_mp_domestic_withdrawal_per_customer):
+			monthly_assumptions_mp_pin_mgmt_per_customer         = [x*rate_pin_mgmt for x in monthly_assumptions_mp_domestic_withdrawal_per_customer]
+			mp_pin_mgmt_functional                               = [(x*y) for x,y in zip(mp_pin_mgmt, monthly_assumptions_mp_pin_mgmt_per_customer)]
+			mp_balance_inquiry_pre_aif_functional                = [(x*y) for x,y in zip(ending_aif_functional_form, mp_pin_mgmt_functional)]
+			return [x*y for x,y in zip(mp_balance_inquiry_pre_aif_functional, mp_pin_mgmt_per_txn_cost)]
+
+
+		#Cost NON MP Domestic Withdrawal (Debit Acct transaction costs)
+		def cost_non_mp_domestic_withdrawal(non_mp_domestic_withdrawal_per_txn_cost, monthly_assumptions_non_mp_domestic_withdrawal_per_customer):
+			non_mp_domestic_withdrawal_functional                = [(x*y) for x,y in zip(non_mp_domestic_withdrawal, monthly_assumptions_non_mp_domestic_withdrawal_per_customer)]
+			non_mp_domestic_withdrawal_pre_aif_functional        = [(x*y) for x,y in zip(ending_aif_functional_form, non_mp_domestic_withdrawal_functional)]
+			return [x*y for x,y in zip(non_mp_domestic_withdrawal_pre_aif_functional, non_mp_domestic_withdrawal_per_txn_cost)]
+
+		#Cost NON MP Decline (Debit Acct transaction costs)
+		def cost_non_mp_decline(mp_decline_per_txn_cost, rate_decline, monthly_assumptions_non_mp_domestic_withdrawal_per_customer):
+			monthly_assumptions_non_mp_decline_per_customer      = [x*rate_decline for x in monthly_assumptions_non_mp_domestic_withdrawal_per_customer]
+			non_mp_decline_functional                            = [(x*y) for x,y in zip(non_mp_decline, monthly_assumptions_non_mp_decline_per_customer)]
+			non_mp_decline_pre_aif_functional                    = [(x*y) for x,y in zip(ending_aif_functional_form, non_mp_decline_functional)]
+			return [x*y for x,y in zip(non_mp_decline_pre_aif_functional, non_mp_decline_per_txn_cost)]
+
+		#Cost NON MP Balance Inquiry (Debit Acct transaction costs)
+		def cost_non_mp_balance_inquiry(non_mp_balance_inquiry_per_txn_cost, rate_balance_inquiry, monthly_assumptions_non_mp_domestic_withdrawal_per_customer):
+			monthly_assumptions_non_mp_balance_inquiry_per_customer  = [x*rate_balance_inquiry for x in monthly_assumptions_non_mp_domestic_withdrawal_per_customer]
+			non_mp_balance_inquiry_functional                    = [(x*y) for x,y in zip(non_mp_balance_inquiry, monthly_assumptions_non_mp_balance_inquiry_per_customer)]
+			non_mp_balance_inquiry_pre_aif_functional            = [(x*y) for x,y in zip(ending_aif_functional_form, non_mp_balance_inquiry_functional)]
+			return [x*y for x,y in zip(non_mp_balance_inquiry_pre_aif_functional, non_mp_balance_inquiry_per_txn_cost)]
+
+		#Cost NON MP Pin Management (Debit Acct transaction costs)
+		def cost_non_mp_pin_mgmt(non_mp_pin_mgmt_per_txn_cost, rate_pin_mgmt, monthly_assumptions_non_mp_domestic_withdrawal_per_customer):
+			monthly_assumptions_non_mp_pin_mgmt_per_customer     = [x*rate_pin_mgmt for x in monthly_assumptions_non_mp_domestic_withdrawal_per_customer]
+			non_mp_pin_mgmt_functional                           = [(x*y) for x,y in zip(non_mp_pin_mgmt, monthly_assumptions_non_mp_pin_mgmt_per_customer)]
+			non_mp_balance_inquiry_pre_aif_functional            = [(x*y) for x,y in zip(ending_aif_functional_form, non_mp_pin_mgmt_functional)]
+			return [(x*y) for x,y in zip(non_mp_balance_inquiry_pre_aif_functional, non_mp_pin_mgmt_per_txn_cost)]
+
+		#Cost Intl debit spend fx fees (Debit Acct transaction costs)
+		def cost_intl_debit_spend_fx_fees(debit_card_spend,percentage_international_transactions, avg_debit_transaction_size, intl_txn_per_txn_cost):
+			return [((x*percentage_international_transactions)/avg_debit_transaction_size)*intl_txn_per_txn_cost for x in debit_card_spend]
+
+		# Cost New Account Setup (Other transaction Costs)
+		def cost_new_acct_setup(new_acct_setup_costs,new_accounts_acquired):
+			return [x*new_acct_setup_costs for x in new_accounts_acquired]
+
+		# Cost Cedar Communication (Other transaction Costs)
+		def cost_cedar_comm(cedar_comm_cost_per_month, monthly_assumptions_cedar_comm_per_customer):
+			cedar_comm_functional                                = [(x*y*z) for x,y,z in zip(cedar_comm, monthly_assumptions_cedar_comm_per_customer,FIS_Cedar_cost_savings_reduced)]
+			cedar_comm_pre_aif_functional                        = [(x*y) for x,y in zip(ending_aif_functional_form, cedar_comm_functional)]
+			return [x*y for x,y in zip(cedar_comm_pre_aif_functional, cedar_comm_cost_per_month)]
+
+		## Cost Intl Wire Incoming (Cross Sell Costs)
+		def cost_intl_wire_incoming(cost_intl_wire_incoming_per_txn, monthly_assumptions_intl_wire_incoming):
+			intl_wire_functional                                 = [(x*y) for x,y in zip(intl_wire_incoming, monthly_assumptions_intl_wire_incoming)]
+			intl_wire_pre_aif_functional                         = [(x*y) for x,y in zip(ending_aif_functional_form, intl_wire_functional)]
+			return [x*y for x,y in zip(intl_wire_pre_aif_functional, cost_intl_wire_incoming_per_txn)]
+
+		def cost_intl_wire_outgoing(cost_intl_wire_outgoing_per_txn, monthly_assumptions_intl_wire_outgoing):
+			intl_wire_functional                                 = [(x*y) for x,y in zip(intl_wire_outgoing, monthly_assumptions_intl_wire_outgoing)]
+			intl_wire_pre_aif_functional                         = [(x*y) for x,y in zip(ending_aif_functional_form, intl_wire_functional)]
+			return [x*y for x,y in zip(intl_wire_pre_aif_functional, cost_intl_wire_outgoing_per_txn)]
+
+		def cost_gbf_cross_sell(average_annual_ar,revenue_margin,gc_margin,customer_eligibility_rate,bca_gbf_accounts_rate,gbf_cross_sell_feature_intro_input_factor):
+			revenue_from_1_loan                                  = [average_annual_ar*revenue_margin/12]*60
+			bca_accts_with_loan                                  = customer_eligibility_rate*bca_gbf_accounts_rate/12
+			gc_from_single_loan                                  = [average_annual_ar*gc_margin/12]*60
+			return [(x-y)*bca_accts_with_loan*gbf_cross_sell_feature_intro_input_factor for x,y in zip(revenue_from_1_loan,gc_from_single_loan)]
+
+		#Cost New Card Expense (Cross Sell Costs)
+		def cost_new_card_spend(spend_for_1_CM_incl_attrition,gc_margin_rate,new_card_fee_feature_intro_input_factor,annual_spend,spend_increase,rate_total_lift_achieved_by_customer,revenue_margin_rate):
+			year_1_spend = sum(spend_for_1_CM_incl_attrition[:12])
+			year_2_spend = sum(spend_for_1_CM_incl_attrition[12:24])
+			year_3_spend = sum(spend_for_1_CM_incl_attrition[24:36])
+			year_4_spend = sum(spend_for_1_CM_incl_attrition[36:48])
+			year_5_spend = sum(spend_for_1_CM_incl_attrition[-12:])
+			shape_of_spend_curve_post_attrition                  = [x/year_1_spend for x in spend_for_1_CM_incl_attrition[:12]] + [x/year_2_spend for x in spend_for_1_CM_incl_attrition[12:24]] + [x/year_3_spend for x in spend_for_1_CM_incl_attrition[24:36]] + [x/year_4_spend for x in spend_for_1_CM_incl_attrition[36:48]] + [x/year_5_spend for x in spend_for_1_CM_incl_attrition[-12:]]
+			inc_monthly_spend_from_customer                      = [annual_spend*spend_increase*rate_total_lift_achieved_by_customer*x for x in shape_of_spend_curve_post_attrition]
+			return [x*(revenue_margin_rate-gc_margin_rate)*new_card_fee_feature_intro_input_factor for x in inc_monthly_spend_from_customer]
+
+		# def cost_debit_fraud_protection(credit_loss_per_avg_deposit_rate,fraud_allocation_rate):
+		# 	return [x*(y/12)*fraud_allocation_rate for x,y in zip(average_deposits,credit_loss_per_avg_deposit_rate)]
+		def cost_debit_fraud_protection(average_deposits,credit_loss_per_avg_deposit_rate,fraud_allocation_rate):
+			return [credit_loss_per_avg_deposit_rate[i]/12*fraud_allocation_rate*average_deposits[i] for i in range(0,len(ending_deposit_balance_functional_form))]           
+		def cost_debit_disputes (debit_card_spend,debit_disputes_rate):
+			return [(x*debit_disputes_rate) for x in debit_card_spend]
+
+		def cost_debit_rewards(urr,cpp,earn_debit,debit_card_spend):
+			return [(x*urr*cpp*earn_debit) for x in debit_card_spend]
+
+		def cost_ach_outgoing_rewards(avg_ach_outgoing_txn_size, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer, monthly_assumptions_domestic_ach_outgoing_per_customer,urr,cpp):    
+			domestic_ach_outgoing_aif_functional                 = [(x*y) for x,y in zip(domestic_ach_outgoing, monthly_assumptions_domestic_ach_outgoing_per_customer)]
+			domestic_ach_outgoing_pre_aif_functional             = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_ach_outgoing_aif_functional)] 
+			domestic_sameday_ach_outgoing_aif_functional         = [(x*y) for x,y in zip(domestic_sameday_ach_outgoing, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer)]
+			domestic_sameday_ach_outgoing_pre_aif_functional     = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_sameday_ach_outgoing_aif_functional)]
+			result                                               = [(x+y) for x,y in zip(domestic_ach_outgoing_pre_aif_functional, domestic_sameday_ach_outgoing_pre_aif_functional)]
+			earn_ach_rewards                                     = [(x*avg_ach_outgoing_txn_size*y*urr*cpp) for x,y in zip(result,earn_ach)]
+			earn_ach_rewards [:24]                               = [0]*24           
+			return earn_ach_rewards
+
+		def cost_wire_rewards(monthly_assumptions_domestic_wire_outgoing_per_customer,wire_outgoing_avg_txn,earn_wire):
+			domestic_wire_outgoing_aif_functional                = [(x*y) for x,y in zip(domestic_wire_outgoing, monthly_assumptions_domestic_wire_outgoing_per_customer)]
+			domestic_wire_outgoing_pre_aif_functional            = [(x*y) for x,y in zip(ending_aif_functional_form, domestic_wire_outgoing_aif_functional)]
+			earn_wire_rewards                                    = [x*wire_outgoing_avg_txn*y*urr*cpp for x,y in zip(domestic_wire_outgoing_pre_aif_functional,earn_wire)]
+			earn_wire_rewards [:24]                              = [0]*24
+
+			return earn_wire_rewards
+
+		def gsn_servicing (gsn_servicing_rate_annual_per_act,ending_aif_functional_form):
+			return [x*y/12 for x,y in zip(ending_aif_functional_form, gsn_servicing_rate_annual_per_act) ]
+
+		def cost_new_card (new_accounts_acquired, blended_rate_incl_standard_rush):
+			return [x*y for x,y in zip(new_accounts_acquired,blended_rate_incl_standard_rush) ]
+
+		def cost_card_replacement_standard (card_replacement_standard_rate,monthly_assumptions_card_replacement_standard):
+			card_replacement_standard_aif_functional             = [x*monthly_assumptions_card_replacement_standard for x in card_replacement_standard]
+			return [x*card_replacement_standard_rate for x in card_replacement_standard_aif_functional]
+
+		def cost_card_replacement_rush_shipping (card_replacement_rush_shipping_rate, monthly_assumptions_card_replacement_rush_shipping):
+			card_replacement_rush_shipping_aif_functional        = [x*card_replacement_rush_shipping_rate for x in card_replacement_rush_shipping]
+			return [x*monthly_assumptions_card_replacement_rush_shipping for x in card_replacement_rush_shipping_aif_functional]
+
+		def cost_basic_purchase_protection (basic_purchase_protection_rate, average_aif):
+			return [x*basic_purchase_protection_rate/12 for x in average_aif]
+
+		## Cost Extended Warranty (NAC benefits)
+		def cost_extended_warranty (extended_warranty_rate, average_aif):
+			return [x*extended_warranty_rate/12 for x in average_aif]
+
+		## Cost Global Hotline (NAC benefits)
+		def cost_global_assist_hotline (global_assist_hotline_rate, average_aif):
+			return [x*global_assist_hotline_rate/12 for x in average_aif]
+
+		## Acquisition Incentives (ACU Costs)
+		def cost_acquisition_incentives(cpa_rate, check_cpa_incentive_customer, cpa_overlay_incentive_cost, lrp_overlay_naa, acquisition_incentive_customer):
+			acquisition_cost                                       = []
+			for i in range(0,len(new_accounts_acquired)):
+				if(i<13):
+					acquisition_cost.append (new_accounts_acquired[i]*cpa_rate)
+				elif(i>13 and i<49):
+					acquisition_cost.append(check_cpa_incentive_customer[i]   * (new_accounts_acquired[i]-lrp_overlay_naa[i]) + (cpa_overlay_incentive_cost[i]*lrp_overlay_naa[i]) )
+				else:
+					acquisition_cost.append(acquisition_incentive_customer[i] * (new_accounts_acquired[i]-lrp_overlay_naa[i]) + (cpa_overlay_incentive_cost[i]*lrp_overlay_naa[i]) )
+			return acquisition_cost
+  
+		def costs_channel(avg_cpa_forecast_2023,channel_costs_customer,channel_cost_overlay,channel_cost_bbp,lrp_overlay_naa):
+			monthly_channel_costs                                  = []
+			for i in range(0,len(new_accounts_acquired)):
+				if(i<13):
+					monthly_channel_costs.append( new_accounts_acquired[i]  *   avg_cpa_forecast_2023 )
+				else:
+					monthly_channel_costs.append( channel_costs_customer[i] *  (new_accounts_acquired[i] - lrp_overlay_naa[i]) + (channel_cost_overlay[i] * lrp_overlay_naa[i]) + (channel_cost_bbp[i] * new_accounts_acquired[i]))
+			return monthly_channel_costs
+
+		##Cost Yodlee (Yodlee Variable Costs)
+		def yodlee_costs(new_accounts_acquired,new_accounts_acquired_prospect,yodlee_snapshot_service_cost_per_new_acct):
+			total_accounts_acquired       = [x+y for x,y in zip(new_accounts_acquired,new_accounts_acquired_prospect)]
+			yodlee_prospect_customer_cost = [x*yodlee_snapshot_service_cost_per_new_acct for x in total_accounts_acquired]
+			return [(x/y*z) if (y*z!=0) else 0 for x,y,z in zip(new_accounts_acquired,total_accounts_acquired,yodlee_prospect_customer_cost)]
+
+		cost_bca_acct_tran      = [a+b+c+d+e+f+g+h+i+j+k+l+m+n+o for a,b,c,d,e,f,g,h,i,j,k,l,m,n,o in 
+								   zip(cost_domestic_wire_incoming(wire_per_txn_cost_blended_w_tiers,domestic_wire_surcharge,monthly_assumptions_domestic_wire_incoming_per_customer),
+									   cost_domestic_wire_outgoing(wire_per_txn_cost_blended_w_tiers, domestic_wire_outgoing_surcharge, monthly_assumptions_domestic_wire_outgoing_per_customer),
+									   cost_domestic_ach_incoming(ach_per_txn_cost_blended_w_tiers, domestic_ach_incoming_surcharge, monthly_assumptions_domestic_ach_incoming_per_customer),
+									   cost_domestic_ach_outgoing(ach_per_txn_cost_blended_w_tiers, domestic_ach_outgoing_surcharge, monthly_assumptions_domestic_ach_outgoing_per_customer),
+									   cost_domestic_sameday_ach_outgoing(ach_per_txn_cost_blended_w_tiers, domestic_sameday_ach_outgoing_surcharge, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer),
+									   cost_international_ach_incoming(ach_per_txn_cost_blended_w_tiers, international_ach_incoming_surcharge, monthly_assumptions_international_ach_incoming_per_customer),
+									   cost_check_incoming_scanner(check_incoming_scanner_per_txn_cost, check_incoming_scanner_surcharge, monthly_assumptions_check_incoming_scanner_per_customer),
+									   cost_check_incoming_rdc_lockbox(check_incoming_rdc_lockbox_per_txn_cost, mobile_users_per_txn_cost, mobile_capture_base_fee, monthly_assumptions_check_incoming_rdc_lockbox_per_customer),
+									   cost_check_outgoing(check_outgoing_per_txn_cost, monthly_assumptions_check_outgoing_per_customer),
+									   cost_echeck_outgoing(check_outgoing_per_txn_cost, monthly_assumptions_echeck_outgoing_per_customer),
+									   cost_check_scanner(check_scanner_per_txn_cost, monthly_assumptions_check_scanner_per_customer),
+									   cost_billpay_outgoing(bill_pay_outgoing_per_txn_cost, monthly_assumptions_bill_pay_outgoing_per_customer),
+									   cost_stop_payment(stop_payment_per_txn_cost, monthly_assumptions_stop_payment_per_customer),
+									   cost_service_request(service_request_per_txn_cost, monthly_assumptions_service_request_per_customer),
+									   cost_insuffucuent_funds(service_request_per_txn_cost, monthly_assumptions_service_request_per_customer)
+									  )]
+
+## Total Debit Acct transaction Costs(Monthly)
+		costs_debit_acct_tran =  [a+b+c+d+e+f+g+h+i for a,b,c,d,e,f,g,h,i in 
+								   zip(cost_mp_domestic_withdrawal(mp_domestic_withdrawal_per_txn_cost, monthly_assumptions_mp_domestic_withdrawal_per_customer),
+									   cost_mp_decline(mp_decline_per_txn_cost, rate_mp_decline,monthly_assumptions_mp_domestic_withdrawal_per_customer),
+									   cost_mp_balance_inquiry(mp_decline_per_txn_cost, rate_balance_inquiry,monthly_assumptions_mp_domestic_withdrawal_per_customer),
+									   cost_mp_pin_mgmt(mp_pin_mgmt_per_txn_cost, rate_pin_mgmt, monthly_assumptions_mp_domestic_withdrawal_per_customer),
+									   cost_non_mp_domestic_withdrawal(non_mp_domestic_withdrawal_per_txn_cost, monthly_assumptions_non_mp_domestic_withdrawal_per_customer),
+									   cost_non_mp_decline(mp_decline_per_txn_cost, rate_decline, monthly_assumptions_non_mp_domestic_withdrawal_per_customer),
+									   cost_non_mp_balance_inquiry(non_mp_balance_inquiry_per_txn_cost, rate_balance_inquiry, monthly_assumptions_non_mp_domestic_withdrawal_per_customer),
+									   cost_non_mp_pin_mgmt(non_mp_pin_mgmt_per_txn_cost, rate_pin_mgmt, monthly_assumptions_non_mp_domestic_withdrawal_per_customer),
+									   cost_intl_debit_spend_fx_fees(debit_card_spend,percentage_international_transactions, avg_debit_transaction_size, intl_txn_per_txn_cost)
+									   )]
+
+## Other transaction Costs(Monthly)
+		costs_other_tran      =   [a+b for a,b in 
+								   zip(cost_new_acct_setup(new_acct_setup_costs,new_accounts_acquired),
+									   cost_cedar_comm(cedar_comm_cost_per_month, monthly_assumptions_cedar_comm_per_customer)
+									 )]
+    
+
+## Total Cross Sell costs(Monthly)
+		costs_cross_sell      =   [a+b+c+d for a,b,c,d in 
+								   zip(cost_intl_wire_incoming(cost_intl_wire_incoming_per_txn, monthly_assumptions_intl_wire_incoming),
+									   cost_intl_wire_outgoing(cost_intl_wire_outgoing_per_txn, monthly_assumptions_intl_wire_outgoing),
+									   cost_gbf_cross_sell(average_annual_ar,revenue_margin,gc_margin,customer_eligibility_rate,bca_gbf_accounts_rate,gbf_cross_sell_feature_intro_input_factor),
+									   cost_new_card_spend(spend_for_1_CM_incl_attrition,gc_margin_rate,new_card_fee_feature_intro_input_factor,annual_spend,spend_increase,rate_total_lift_achieved_by_customer,revenue_margin_rate)
+									  )]
+   
+## Total Other Variable Debit costs(Monthly)
+		costs_other_var_debit =  [a+b+c+d+e for a,b,c,d,e in 
+								   zip(cost_debit_fraud_protection(average_deposits,credit_loss_per_avg_deposit_rate,fraud_allocation_rate),
+									   cost_debit_disputes (debit_card_spend,debit_disputes_rate),
+									   cost_debit_rewards(urr,cpp,earn_debit,debit_card_spend),
+									   cost_ach_outgoing_rewards(avg_ach_outgoing_txn_size, monthly_assumptions_domestic_sameday_ach_outgoing_per_customer, monthly_assumptions_domestic_ach_outgoing_per_customer,urr,cpp),
+									   cost_wire_rewards(monthly_assumptions_domestic_wire_outgoing_per_customer,wire_outgoing_avg_txn,earn_wire)
+									  )]
+
+## Total Form Factor Costs(Monthly)
+		costs_form_factor     =  [a+b+c for a,b,c in 
+								   zip(cost_new_card (new_accounts_acquired, blended_rate_incl_standard_rush),
+									   cost_card_replacement_standard (card_replacement_standard_rate,monthly_assumptions_card_replacement_standard),
+									   cost_card_replacement_rush_shipping (card_replacement_rush_shipping_rate, monthly_assumptions_card_replacement_rush_shipping),
+									  )]
+
+## Total Costs NAC Benefits(Monthly)
+		costs_nac_benefits    =   [a+b+c for a,b,c in 
+								   zip(cost_basic_purchase_protection (basic_purchase_protection_rate, average_aif),
+									   cost_extended_warranty (extended_warranty_rate, average_aif),
+									   cost_global_assist_hotline (global_assist_hotline_rate, average_aif)
+									  )]
+    
+## Total ACU costs(Monthly)
+		costs_acu             =   [a+b for a,b in 
+								   zip(cost_acquisition_incentives(cpa_rate, check_cpa_incentive_customer, cpa_overlay_incentive_cost, lrp_overlay_naa, acquisition_incentive_customer),
+									   costs_channel(avg_cpa_forecast_2023,channel_costs_customer,channel_cost_overlay,channel_cost_bbp,lrp_overlay_naa)
+									  )]
+
+## Total Cost Per Customer(Monthly)
+		costs_total_per_cust  =   [a+b+c+d+e+f+g+h+i+j for a,b,c,d,e,f,g,h,i,j in 
+								   zip(cost_bca_acct_tran,
+									   costs_debit_acct_tran,
+									   costs_other_tran,
+									   costs_cross_sell,
+									   costs_other_var_debit,
+									   gsn_servicing (gsn_servicing_rate_annual_per_act,ending_aif_functional_form),
+									   costs_form_factor,
+									   costs_nac_benefits,
+									   costs_acu,
+									   yodlee_costs(new_accounts_acquired,new_accounts_acquired_prospect,yodlee_snapshot_service_cost_per_new_acct)
+									   )]
+
+		return costs_total_per_cust, costs_acu, costs_form_factor
+    
+	## CMV Calculation code for the 5-year period 
+	total_cost_per_customer, costs_acu, costs_form_factor          =  total_cost_per_cust()
+
+	##60 month profitability index array    
+	monthly_pti_per_customer                                       =  [x-y for x,y in zip(toal_rev_per_cust(),total_cost_per_customer)] 
+
+	##Yearly PTI, investment and revenue    
+	input_arrays    = [monthly_pti_per_customer, costs_acu, costs_form_factor, toal_rev_per_cust()]
+	all_yearly_sums = []  #Array of arrays to store the 5-year annual values      
+	for i in range(0,len(input_arrays)):
+		yearly_values=[]
+		for j in range(0,len(input_arrays[i]),12):
+			yearly_sum=0
+			for k in range(j, j+12):
+				yearly_sum += input_arrays[i][k]
+			yearly_values.append(yearly_sum)
+		all_yearly_sums.append(yearly_values)   
+        
+	yearly_pti_sums                                                = all_yearly_sums[0]
+	yearly_investments_acu                                         = all_yearly_sums[1]
+	yearly_investments_opex                                        = all_yearly_sums[2]
+
+# ## First Year PTI and Revenue 
+	first_year_ipti                                                = all_yearly_sums[0][0]
+	first_year_irev                                                = all_yearly_sums[3][0]    
+
+	##CMV w/ Terminal Value Calculation   
+	yearly_tufi                                                    = [(x+y)*(1-tax_rate)   for x,y   in zip(yearly_investments_acu, yearly_investments_opex)] 
+	incremental_net_income                                         = [(x+y+z)*(1-tax_rate) if ((x+y+z)>0) else (x+y+z) for x,y,z in zip(yearly_pti_sums, yearly_investments_acu, yearly_investments_opex)] 
+	discount_factor                                                = [round(1/((1+cost_of_capital)**i),10) for i in range(1,5+1)]
+	cmv_discounted                                                 =  sum([x*y for x,y in zip(incremental_net_income,discount_factor)])
+	cmv_w_term_value                                               = ((incremental_net_income[-1]*(1+growth_factor)/(cost_of_capital-growth_factor))*discount_factor[-1]) + cmv_discounted
+
+	return  cmv_w_term_value
+print(cmv_bca_calculation_segmented(9177))
