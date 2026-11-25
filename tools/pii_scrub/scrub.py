@@ -49,6 +49,20 @@ MANUAL = {
   (4,'black', 71,412,150,422),      # sponsor text on backdrop
   (6,'black', 90,206,297,249),      # "Media Club IITM" sign
  ],
+ 'file5': [
+  (2,'black', 150,158,292,184),     # "AMARANTH" store sign (mother's business)
+  (2,'black', 696,165,826,320),     # "BKC Consultants / XBorder Tax" glass sign (father's firm)
+  (3,'black', 292,131,440,212),     # "SMU International Connections" screen + flag + camp name
+  (3,'black', 600,131,645,148),     # "Bandhan Mutual Fund" logo
+  (4,'black', 132,136,165,179),     # banner lettering "TH"
+  (4,'black', 95,211,185,244),      # banner lettering "LAU"
+  (4,'black', 265,209,300,244),     # banner lettering "CH"
+  (4,'black', 105,379,300,410),     # banner tagline / "Follow ..." handle
+  (4,'black', 326,81,364,127),      # "Anpita" building name + Kolkata address
+  (4,'black', 483,161,529,204),     # Lions Club banner with chapter name
+  (4,'black', 304,214,342,327),     # second "The Launch Pad" banner
+  (4,'obscure', 595,292,743,410),   # Hindi news clipping (names, school, photo)
+ ],
  'file4': [
   (5,'obscure', 18,66,346,294),     # local news clipping (text + photo)
   (6,'obscure', 223,126,461,247),   # training screenshot with names / phone numbers
@@ -62,9 +76,10 @@ WORDS = {
  'file2': {'raghav','bain','peda'},
  'file3': {'akash','stern','iit'},
  'file4': {'amex','prayaas','nyu','stern'},
+ 'file5': {'launch','pad','tlp','smu','amaranth','bkc'},
 }
 # lines whose de-spaced text contains any of these are redacted whole (spaced-letter footers)
-LINE_PATTERNS = {'file2': ['NYUSTERN'], 'file1': [], 'file3': [], 'file4': []}
+LINE_PATTERNS = {'file2': ['NYUSTERN'], 'file1': [], 'file3': [], 'file4': [], 'file5': []}
 
 # ---------- face detection ----------
 cascade_f = cv2.CascadeClassifier(os.path.join(BASE, '..', 'models', 'haarcascade_frontalface_default.xml'))
@@ -155,21 +170,37 @@ def detect_faces(bgr, img_regions):
             for bx, by, bw, bh in haar_faces(g, strict=True):
                 haar_c.append((bx/scale, by/scale, bw/scale, bh/scale))
         keep = []
+        def torso_under_face(a):
+            # a large box directly below a smaller, confident box is a body, not a face
+            ax, ay, aw, ah, _ = a
+            if aw * ah < 0.08 * rw * rh: return False
+            for (bx, by, bw, bh, bsc) in mp_c:
+                if bsc < 0.6 or bw * bh > 0.4 * aw * ah: continue
+                bcx, bcy = bx + bw / 2, by + bh / 2
+                if ax - 0.2 * aw <= bcx <= ax + 1.2 * aw and ay - 1.5 * bh <= bcy <= ay + 0.3 * ah:
+                    return True
+            return False
         for (x, y, w, h, sc) in mp_c:
+            if torso_under_face((x, y, w, h, sc)): continue
             box = crop[max(0,int(y)):int(y+h), max(0,int(x)):int(x+w)]
             if box.size == 0: continue
             sr = skin_ratio(box)
-            big = (w * h) > 0.3 * rw * rh
+            frac = (w * h) / float(rw * rh)
             need = 0.06 if w < 60 else (0.15 if w < 120 else 0.22)
-            if sr < need or (big and sr < 0.3): continue
+            if frac > 0.12: need = max(need, 0.35)   # a real face this large is mostly skin
+            if sr < need: continue
             if w > 0.95 * rw or h > 0.95 * rh: continue
             keep.append((x, y, w, h))
         for (x, y, w, h) in haar_c:
             box = crop[max(0,int(y)):int(y+h), max(0,int(x)):int(x+w)]
             if box.size == 0: continue
-            confirmed = any(iou((x, y, w, h), m[:4]) > 0.25 for m in mp_c)
+            def similar(m):   # a confirming DNN box must be roughly the same size
+                r = (m[2] * m[3]) / float(w * h)
+                return 0.4 <= r <= 2.5 and iou((x, y, w, h), m[:4]) > 0.3
+            confirmed = any(similar(m) for m in mp_c)
             sr = skin_ratio(box)
             small = w <= 0.35 * min(rw, rh) + 1
+            if torso_under_face((x, y, w, h, 1.0)): continue
             if confirmed or (sr >= 0.5 and small):
                 keep.append((x, y, w, h))
         for (x, y, w, h) in merge_boxes(keep):
